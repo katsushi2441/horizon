@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/
+Horizon/.env
+Horizon/data/
+Horizon/.cache/
+Horizon/.pytest_cache/
+.horizon-upstream-git/
