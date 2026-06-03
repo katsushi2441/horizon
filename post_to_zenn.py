@@ -6,6 +6,8 @@ Horizonでニュースを収集し、Zennフォーマットに変換してvwork�
 import argparse
 import glob
 import os
+import json
+import re
 import subprocess
 import sys
 import time
@@ -16,6 +18,7 @@ HORIZON_DIR = Path(__file__).parent / "Horizon"
 SUMMARIES_DIR = HORIZON_DIR / "data" / "summaries"
 VWORK_DIR = Path("/home/kojima/exdirect/vwork")
 ARTICLES_DIR = VWORK_DIR / "articles"
+KURAGE_JOBS_DIR = Path("/home/kojima/exdirect/kurage/storage/jobs")
 DASHBOARD_API = "http://localhost:8081/worker/report"
 OLLAMA_URL = "http://192.168.0.14:11434"
 OLLAMA_MODEL = "gemma4:e4b"
@@ -123,6 +126,88 @@ def get_latest_summary() -> tuple[Path, str]:
         if files:
             return files[0], today
     raise FileNotFoundError(f"今日のsummaryファイルが見つかりません: horizon-{today}-*.md")
+
+
+STOP_TOPIC_TOKENS = {
+    "https", "http", "www", "com", "the", "and", "with", "from", "that",
+    "this", "into", "using", "uses", "lets", "new", "news", "blog", "study",
+    "tool", "tools", "model", "models", "agent", "agents", "open", "source",
+}
+
+
+def topic_tokens(text: str) -> set[str]:
+    tokens = set()
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._+-]{2,}", text.lower()):
+        token = token.strip("._+-")
+        if len(token) < 3 or token in STOP_TOPIC_TOKENS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def collect_used_topic_text(post_date: str) -> str:
+    parts = []
+    for path in sorted(ARTICLES_DIR.glob(f"{post_date}-ai-news*.md")):
+        try:
+            parts.append(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    prefix = f"https://katsushi2441.github.io/vwork/articles/{post_date}-ai-news"
+    if KURAGE_JOBS_DIR.exists():
+        for meta_path in sorted(KURAGE_JOBS_DIR.glob("*.json")):
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            tweet_url = str(data.get("tweet_url") or "")
+            if not tweet_url.startswith(prefix):
+                continue
+            parts.extend([
+                str(data.get("title") or ""),
+                str(data.get("tweet_text") or ""),
+            ])
+            script = data.get("script") or {}
+            if isinstance(script, dict):
+                for scene in script.get("scenes") or []:
+                    if isinstance(scene, dict):
+                        parts.append(str(scene.get("narration") or ""))
+    return "\n".join(parts)
+
+
+def filter_used_summary_sections(summary_text: str, post_date: str) -> str:
+    used_text = collect_used_topic_text(post_date)
+    if not used_text.strip():
+        return summary_text
+    used_lower = used_text.lower()
+    used_tokens = topic_tokens(used_text)
+    if not used_tokens:
+        return summary_text
+
+    sections = re.split(r"(?=\n?## \[)", summary_text)
+    if len(sections) == 1:
+        return summary_text
+    kept = []
+    removed = 0
+    for section in sections:
+        if not section.lstrip().startswith("## ["):
+            kept.append(section)
+            continue
+        first_line = section.splitlines()[0]
+        title = re.sub(r"^\n?##\s*", "", first_line)
+        title = re.sub(r"\]\([^)]+\)", "]", title)
+        title = title.strip("[] ")
+        title_tokens = topic_tokens(title)
+        overlap = title_tokens & used_tokens
+        exact = title.lower() and title.lower() in used_lower
+        has_strong_overlap = any(len(token) >= 7 for token in overlap)
+        if exact or has_strong_overlap or (len(overlap) >= 2 and len(overlap) / max(1, len(title_tokens)) >= 0.35):
+            removed += 1
+            log(f"同日既存記事との重複を除外: {title}")
+            continue
+        kept.append(section)
+    if removed:
+        log(f"同日重複除外: {removed}件")
+    return "".join(kept)
 
 
 def extract_h1_title(body: str, post_date: str) -> str:
@@ -240,6 +325,7 @@ def main():
         log(f"summary: {summary_path}")
 
         summary_text = summary_path.read_text(encoding="utf-8")
+        summary_text = filter_used_summary_sections(summary_text, post_date)
 
         article_path = next_article_path(post_date)
         log(f"投稿先記事: {article_path.name}")

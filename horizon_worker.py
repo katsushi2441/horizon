@@ -87,18 +87,48 @@ def run_step(cmd: list, desc: str, timeout: int = 1800, extra_env: dict = None, 
     env = {**os.environ}
     if extra_env:
         env.update(extra_env)
-    result = subprocess.run(cmd, cwd=cwd, env=env,
-                            capture_output=True, text=True, timeout=timeout)
-    run_step.last_stdout = result.stdout or ""
-    run_step.last_stderr = result.stderr or ""
-    if result.stdout:
-        for line in result.stdout.strip().splitlines():
-            log(f"  {line}")
-    if result.stderr:
-        for line in result.stderr.strip().splitlines()[-10:]:
-            log(f"  [err] {line}")
-    if result.returncode != 0:
-        log(f"=== {desc} 失敗 (exit {result.returncode}) ===")
+    stdout_lines = []
+    stderr_lines = []
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    start = time.time()
+    import selectors
+
+    sel = selectors.DefaultSelector()
+    if proc.stdout:
+        sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    if proc.stderr:
+        sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
+
+    while sel.get_map():
+        if time.time() - start > timeout:
+            proc.kill()
+            log(f"=== {desc} タイムアウト ({timeout}s) ===")
+            return False
+        for key, _ in sel.select(timeout=1):
+            line = key.fileobj.readline()
+            if not line:
+                sel.unregister(key.fileobj)
+                continue
+            line = line.rstrip()
+            if key.data == "stderr":
+                stderr_lines.append(line)
+                log(f"  [err] {line}")
+            else:
+                stdout_lines.append(line)
+                log(f"  {line}")
+    return_code = proc.wait()
+    run_step.last_stdout = "\n".join(stdout_lines)
+    run_step.last_stderr = "\n".join(stderr_lines)
+    if return_code != 0:
+        log(f"=== {desc} 失敗 (exit {return_code}) ===")
         return False
     log(f"=== {desc} 完了 ===")
     return True
@@ -148,12 +178,21 @@ def parse_job_id(stdout: str) -> str:
 
 def wait_video_done(job_id: str, timeout: int = 1800) -> bool:
     deadline = time.time() + timeout
+    last_status = ""
     while time.time() < deadline:
         try:
             res = urllib.request.urlopen(f"{KURAGE_API}/status/{job_id}", timeout=10)
             data = json.loads(res.read())
             status = data.get("status", "")
-            log(f"  動画ステータス: {status} ({data.get('progress', 0)}%)")
+            progress = data.get("progress", 0)
+            phase = data.get("phase") or data.get("step") or data.get("message") or data.get("current_step") or ""
+            note = f"動画生成待ち job={job_id} status={status} progress={progress}%"
+            if phase:
+                note += f" phase={phase}"
+            log(f"  {note}")
+            if note != last_status:
+                report_worker("running", 0, note)
+                last_status = note
             if status == "done":
                 return True
             if status == "error":

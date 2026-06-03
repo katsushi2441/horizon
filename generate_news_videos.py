@@ -21,8 +21,10 @@ import requests
 
 HORIZON_DIR = Path(__file__).parent / "Horizon"
 SUMMARIES_DIR = HORIZON_DIR / "data" / "summaries"
+KURAGE_JOBS_DIR = Path("/home/kojima/exdirect/kurage/storage/jobs")
 KURAGE_API = "http://exbridge.ddns.net:18200"
 VWORK_ARTICLES_URL = "https://katsushi2441.github.io/vwork/articles/"
+VWORK_ARTICLES_DIR = Path("/home/kojima/exdirect/vwork/articles")
 
 
 def log(msg: str):
@@ -100,6 +102,78 @@ def parse_news_items(md_text: str) -> list[dict]:
     return items
 
 
+STOP_TOPIC_TOKENS = {
+    "https", "http", "www", "com", "the", "and", "with", "from", "that",
+    "this", "into", "using", "uses", "lets", "new", "news", "blog", "study",
+    "tool", "tools", "model", "models", "agent", "agents", "open", "source",
+}
+
+
+def topic_tokens(text: str) -> set[str]:
+    tokens = set()
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._+-]{2,}", text.lower()):
+        token = token.strip("._+-")
+        if len(token) < 3 or token in STOP_TOPIC_TOKENS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def collect_used_topic_text(summary_date: str, current_article_url: str) -> str:
+    parts = []
+    for path in sorted(VWORK_ARTICLES_DIR.glob(f"{summary_date}-ai-news*.md")):
+        article_url = f"{VWORK_ARTICLES_URL}{path.stem}.html"
+        if article_url == current_article_url:
+            continue
+        try:
+            parts.append(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+    prefix = f"{VWORK_ARTICLES_URL}{summary_date}-ai-news"
+    if KURAGE_JOBS_DIR.exists():
+        for meta_path in sorted(KURAGE_JOBS_DIR.glob("*.json")):
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            tweet_url = str(data.get("tweet_url") or "")
+            if not tweet_url.startswith(prefix) or tweet_url == current_article_url:
+                continue
+            parts.extend([
+                str(data.get("title") or ""),
+                str(data.get("tweet_text") or ""),
+            ])
+            script = data.get("script") or {}
+            if isinstance(script, dict):
+                for scene in script.get("scenes") or []:
+                    if isinstance(scene, dict):
+                        parts.append(str(scene.get("narration") or ""))
+    return "\n".join(parts)
+
+
+def filter_used_items(items: list[dict], summary_date: str, current_article_url: str) -> list[dict]:
+    used_text = collect_used_topic_text(summary_date, current_article_url)
+    used_lower = used_text.lower()
+    used_tokens = topic_tokens(used_text)
+    if not used_tokens:
+        return items
+    filtered = []
+    for item in items:
+        title = item.get("title") or ""
+        tokens = topic_tokens(title + " " + (item.get("content") or "")[:160])
+        overlap = tokens & used_tokens
+        exact = title.lower() and title.lower() in used_lower
+        has_strong_overlap = any(len(token) >= 7 for token in overlap)
+        if exact or has_strong_overlap or (len(overlap) >= 2 and len(overlap) / max(1, len(tokens)) >= 0.25):
+            log(f"同日既存動画/記事との重複を除外: {title}")
+            continue
+        filtered.append(item)
+    removed = len(items) - len(filtered)
+    if removed:
+        log(f"同日重複除外: {removed}件")
+    return filtered
+
+
 def article_url_for(summary_date: str) -> str:
     return f"{VWORK_ARTICLES_URL}{summary_date}-ai-news.html"
 
@@ -164,6 +238,7 @@ def main():
 
     md_text = summary_path.read_text(encoding="utf-8")
     items = parse_news_items(md_text)
+    items = filter_used_items(items, summary_date, article_url)
     log(f"記事を {len(items)} 件抽出")
 
     if not items:
