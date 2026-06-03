@@ -150,12 +150,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="送信せず確認のみ")
     parser.add_argument("--wait", action="store_true", help="完了まで待機する")
     parser.add_argument("--force", action="store_true", help="今日分が既にあっても生成する")
+    parser.add_argument("--article-url", default="", help="動画の識別に使うVWork記事URL")
     args = parser.parse_args()
 
     summary_path, summary_date = get_latest_summary()
     log(f"summary: {summary_path}")
 
-    article_url = article_url_for(summary_date)
+    article_url = args.article_url.strip() or article_url_for(summary_date)
 
     if not args.force and not args.dry_run and already_generated_for_article(article_url):
         log(f"対象記事の動画は既に生成済みです: {article_url}（--force で強制実行）")

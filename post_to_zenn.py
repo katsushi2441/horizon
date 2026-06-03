@@ -185,6 +185,18 @@ def update_articles_index(article_path: Path, post_date: str, title: str):
     log(f"articles.md 更新: {new_link.strip()}")
 
 
+def next_article_path(post_date: str) -> Path:
+    """同じ日に複数本投稿できるよう、空いているslugを返す。"""
+    base = ARTICLES_DIR / f"{post_date}-ai-news.md"
+    if not base.exists():
+        return base
+    for i in range(2, 100):
+        candidate = ARTICLES_DIR / f"{post_date}-ai-news-{i}.md"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"記事slugの空きがありません: {post_date}-ai-news-*")
+
+
 def push_to_vwork(article_path: Path, post_date: str, ssh_sock: str, dry_run: bool, title: str = ""):
     """vworkリポジトリへgit pushする"""
     env = {**os.environ}
@@ -229,14 +241,8 @@ def main():
 
         summary_text = summary_path.read_text(encoding="utf-8")
 
-        article_filename = f"{post_date}-ai-news.md"
-        article_path = ARTICLES_DIR / article_filename
-
-        # 既に今日の記事があればスキップ
-        if article_path.exists() and not args.dry_run:
-            log(f"今日の記事は既に存在します: {article_filename}")
-            report_worker("ok", 0, f"既存記事 {post_date}")
-            return
+        article_path = next_article_path(post_date)
+        log(f"投稿先記事: {article_path.name}")
 
         zenn_md, article_title = to_zenn_markdown(summary_text, post_date)
 

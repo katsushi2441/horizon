@@ -19,6 +19,7 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 import glob
+import re
 
 SCRIPT_DIR = Path(__file__).parent
 HORIZON_DIR = SCRIPT_DIR / "Horizon"
@@ -88,6 +89,8 @@ def run_step(cmd: list, desc: str, timeout: int = 1800, extra_env: dict = None, 
         env.update(extra_env)
     result = subprocess.run(cmd, cwd=cwd, env=env,
                             capture_output=True, text=True, timeout=timeout)
+    run_step.last_stdout = result.stdout or ""
+    run_step.last_stderr = result.stderr or ""
     if result.stdout:
         for line in result.stdout.strip().splitlines():
             log(f"  {line}")
@@ -101,9 +104,11 @@ def run_step(cmd: list, desc: str, timeout: int = 1800, extra_env: dict = None, 
     return True
 
 
-def get_today_article_title() -> str:
-    today = date.today().strftime("%Y-%m-%d")
-    article = SCRIPT_DIR.parent / "vwork" / "articles" / f"{today}-ai-news.md"
+run_step.last_stdout = ""
+run_step.last_stderr = ""
+
+
+def get_article_title(article: Path) -> str:
     if not article.exists():
         return ""
     for line in article.read_text(encoding="utf-8").splitlines():
@@ -112,22 +117,33 @@ def get_today_article_title() -> str:
     return ""
 
 
-def get_today_article_url() -> str:
-    today = date.today().strftime("%Y-%m-%d")
-    return f"{VWORK_ARTICLES_URL}{today}-ai-news.html"
+def article_url(article: Path) -> str:
+    return f"{VWORK_ARTICLES_URL}{article.stem}.html"
 
 
-def get_today_video_job_id() -> str:
-    article_url = get_today_article_url()
+def get_video_job_id_for_article(target_article_url: str) -> str:
     try:
         res = urllib.request.urlopen(f"{KURAGE_API}/jobs?source=horizon&limit=20", timeout=10)
         data = json.loads(res.read())
         for j in data.get("jobs", []):
-            if j.get("tweet_url") == article_url and j.get("status") == "done" and j.get("has_video"):
+            if j.get("tweet_url") == target_article_url and j.get("status") == "done" and j.get("has_video"):
                 return j.get("job_id", "")
     except Exception as e:
         log(f"job_id取得失敗: {e}")
     return ""
+
+
+def parse_created_article(stdout: str) -> Path | None:
+    for line in stdout.splitlines():
+        m = re.search(r"記事作成:\s*(/.+?\.md)\s*$", line)
+        if m:
+            return Path(m.group(1))
+    return None
+
+
+def parse_job_id(stdout: str) -> str:
+    m = re.search(r"送信完了:\s*job_id=([0-9A-Za-z_-]+)", stdout)
+    return m.group(1) if m else ""
 
 
 def wait_video_done(job_id: str, timeout: int = 1800) -> bool:
@@ -172,25 +188,25 @@ def save_job(job_id: str, data: dict):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def upload_youtube(job_id: str, title: str) -> str:
+def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
     job = load_job(job_id)
     if job.get("youtube_url"):
         log(f"YouTube投稿済み: {job['youtube_url']}")
-        return job["youtube_url"]
+        return job["youtube_url"], False
 
     video_path = KURAGE_DIR / "storage" / "jobs" / job_id / "output.mp4"
     if not video_path.exists():
         log(f"YouTube投稿スキップ: 動画ファイルなし {video_path}")
-        return ""
+        return "", False
     if not YOUTUBE_UPLOAD.exists():
         log(f"YouTube投稿スキップ: upload_youtube.pyなし {YOUTUBE_UPLOAD}")
-        return ""
+        return "", False
 
-    article_url = job.get("tweet_url") or get_today_article_url()
+    source_article_url = job.get("tweet_url") or ""
     horizon_url = f"{HORIZONV_URL}?id={job_id}"
     description = (
         "Horizonで収集・要約したAI/Web3ニュースを、Kurageでショート動画化しました。\n\n"
-        f"元記事:\n{article_url}\n\n"
+        f"元記事:\n{source_article_url}\n\n"
         f"Horizon動画ページ:\n{horizon_url}\n\n"
         "バイブコーディングフレームワーク VWork\n"
         "https://katsushi2441.github.io/vwork/\n\n"
@@ -210,7 +226,7 @@ def upload_youtube(job_id: str, title: str) -> str:
     ]
     ok = run_step(cmd, "YouTube動画投稿", timeout=900, cwd=YOUTUBE_DIR)
     if not ok:
-        return ""
+        return "", False
     try:
         response = json.loads(json_out.read_text(encoding="utf-8"))
         video_id = response.get("id", "")
@@ -221,10 +237,10 @@ def upload_youtube(job_id: str, title: str) -> str:
             job["youtube_uploaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             save_job(job_id, job)
             log(f"YouTube投稿完了: {youtube_url}")
-            return youtube_url
+            return youtube_url, True
     except Exception as exc:
         log(f"YouTube投稿結果読込失敗: {exc}")
-    return ""
+    return "", False
 
 
 def main():
@@ -234,13 +250,16 @@ def main():
 
     report_worker("running", 0, "Horizonニュース収集中")
     today = date.today().strftime("%Y-%m-%d")
-    success_count = 0
     article_post_id = ""
     video_post_id = ""
-    final_job_id = ""
-    final_youtube_url = ""
-    article_path = SCRIPT_DIR.parent / "vwork" / "articles" / f"{today}-ai-news.md"
-    article_already_exists = article_path.exists()
+    articles_created = 0
+    videos_created = 0
+    youtube_uploaded = 0
+    skipped_existing = 0
+    failed = 0
+    job_ids = []
+    youtube_urls = []
+    created_article = None
 
     # Step 1: Horizon summary生成
     ok = run_step(
@@ -266,62 +285,44 @@ def main():
         extra_env={"SSH_AUTH_SOCK": ssh_sock} if ssh_sock else {},
     )
     if ok:
-        success_count += 1
-        article_title = get_today_article_title()
-        if article_title and not article_already_exists:
-            article_url = f"{VWORK_ARTICLES_URL}{today}-ai-news.html"
-            article_post_id = post_to_sns(
-                f"📰 {article_title}\n\n"
-                f"Horizon-AIが収集したAI・Web3・スタートアップの最新ニュースをまとめました。\n\n"
-                f"{article_url}\n\n"
-                f"株式会社エクスブリッジ https://exbridge.jp/"
-            )
+        created_article = parse_created_article(run_step.last_stdout)
+        if created_article:
+            articles_created += 1
+            article_title = get_article_title(created_article)
+            source_article_url = article_url(created_article)
+            if article_title:
+                article_post_id = post_to_sns(
+                    f"📰 {article_title}\n\n"
+                    f"Horizon-AIが収集したAI・Web3・スタートアップのニュースをまとめました。\n\n"
+                    f"{source_article_url}\n\n"
+                    f"株式会社エクスブリッジ https://exbridge.jp/"
+                )
+        else:
+            skipped_existing += 1
+            log("新規記事作成なし")
+    else:
+        failed += 1
 
     # Step 3: 動画生成
-    report_worker("running", success_count, "動画生成中")
-    existing_video_job_id = get_today_video_job_id()
-    if existing_video_job_id:
-        log(f"今日の記事URLの動画は既に存在します: {existing_video_job_id}")
-        final_job_id = existing_video_job_id
-        success_count += 1
-        try:
-            res = urllib.request.urlopen(f"{KURAGE_API}/status/{existing_video_job_id}", timeout=10)
-            video_data = json.loads(res.read())
-            video_title = video_data.get("title", "AIニュース動画")
-        except Exception:
-            video_title = "AIニュース動画"
-
-        youtube_url = upload_youtube(existing_video_job_id, video_title)
-        if youtube_url:
-            success_count += 1
-            final_youtube_url = youtube_url
-        ok = False
-    else:
+    report_worker("running", videos_created, "動画生成中")
+    if created_article:
+        source_article_url = article_url(created_article)
         ok = run_step(
-            ["python3", "generate_news_videos.py"],
+            ["python3", "generate_news_videos.py", "--article-url", source_article_url],
             "ニュース動画生成",
             timeout=120,
         )
-    if ok:
-        # job_idを取得して完了を待つ
-        time.sleep(10)
-        job_id = get_today_video_job_id()
-        if not job_id:
-            # job一覧から最新のhorizonジョブを探す
-            try:
-                res = urllib.request.urlopen(f"{KURAGE_API}/jobs?source=horizon&limit=5", timeout=10)
-                data = json.loads(res.read())
-                jobs = data.get("jobs", [])
-                if jobs:
-                    job_id = jobs[0].get("job_id", "")
-            except Exception:
-                pass
+    else:
+        ok = False
+        log("新規記事がないため動画生成をスキップ")
 
+    if ok:
+        job_id = parse_job_id(run_step.last_stdout) or get_video_job_id_for_article(source_article_url)
         if job_id:
-            final_job_id = job_id
+            job_ids.append(job_id)
             log(f"動画job_id: {job_id} 完了待ち...")
             if wait_video_done(job_id):
-                success_count += 1
+                videos_created += 1
                 # 動画タイトル取得
                 try:
                     res = urllib.request.urlopen(f"{KURAGE_API}/status/{job_id}", timeout=10)
@@ -330,10 +331,12 @@ def main():
                 except Exception:
                     video_title = "AIニュース動画"
 
-                youtube_url = upload_youtube(job_id, video_title)
-                if youtube_url:
-                    success_count += 1
-                    final_youtube_url = youtube_url
+                youtube_url, uploaded = upload_youtube(job_id, video_title)
+                if uploaded:
+                    youtube_uploaded += 1
+                    youtube_urls.append(youtube_url)
+                elif youtube_url:
+                    skipped_existing += 1
 
                 youtube_block = f"YouTube:\n{youtube_url}\n\n" if youtube_url else ""
                 video_post_id = post_to_sns(
@@ -343,22 +346,33 @@ def main():
                     f"{youtube_block}"
                     f"株式会社エクスブリッジ https://exbridge.jp/"
                 )
+            else:
+                failed += 1
+        else:
+            skipped_existing += 1
+            log("新規動画job_idなし")
+    elif created_article:
+        failed += 1
 
-    if success_count >= 3:
-        note = (
-            f"日次1本完了: VWork記事1 / Horizon動画1 / YouTube1 / "
-            f"AIxSNS告知{sum(1 for x in (article_post_id, video_post_id) if x)}件"
-        )
-        if article_post_id or video_post_id:
-            note += f" id={','.join(x for x in (article_post_id, video_post_id) if x)}"
-        if final_job_id:
-            note += f" job={final_job_id}"
-        if final_youtube_url:
-            note += f" YouTube={final_youtube_url}"
-        report_worker("ok", 1, note)
+    note = (
+        f"articles_created={articles_created} videos_created={videos_created} "
+        f"youtube_uploaded={youtube_uploaded} skipped_existing={skipped_existing} failed={failed}"
+    )
+    if job_ids:
+        note += f" job_ids={','.join(job_ids)}"
+    if youtube_urls:
+        note += f" youtube_urls={','.join(youtube_urls)}"
+    sns_count = sum(1 for x in (article_post_id, video_post_id) if x)
+    if sns_count:
+        note += f" sns_posts={sns_count}"
+
+    if youtube_uploaded >= 1:
+        report_worker("ok", youtube_uploaded, note)
+    elif failed == 0:
+        report_worker("warn", videos_created, note)
     else:
-        report_worker("down", 0, f"未完了: 成功工程{success_count}/3")
-    log(f"====== horizon_worker 完了 (success={success_count}) ======")
+        report_worker("down", videos_created, note)
+    log(f"====== horizon_worker 完了 ({note}) ======")
 
 
 if __name__ == "__main__":
