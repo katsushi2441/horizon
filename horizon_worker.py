@@ -54,7 +54,7 @@ def find_ssh_agent() -> str:
 def report_worker(status: str, items: int, note: str = ""):
     try:
         payload = json.dumps({
-            "name": "horizon_worker",
+            "name": "horizon-worker-enqueue",
             "status": status,
             "items": items,
             "note": note[:200],
