@@ -33,6 +33,7 @@ DASHBOARD_API = "http://localhost:8081/worker/report"
 VWORK_ARTICLES_URL = "https://katsushi2441.github.io/vwork/articles/"
 HORIZONV_URL = "https://aiknowledgecms.exbridge.jp/horizonv.php"
 LOG_PATH = Path("/tmp/horizon_worker.log")
+LOCK_PATH = Path("/tmp/horizon_worker_api.pid")
 
 
 def log(msg: str):
@@ -415,4 +416,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        try:
+            if LOCK_PATH.exists():
+                pid = LOCK_PATH.read_text(encoding="utf-8").strip()
+                if pid == str(os.getpid()):
+                    LOCK_PATH.unlink()
+                    log("pid lock削除完了")
+        except Exception as exc:
+            log(f"pid lock削除失敗: {exc}")
