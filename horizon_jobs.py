@@ -71,6 +71,9 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
         note_parts.append(str(response.get("message")))
     return {
         "status": "ok",
+        "completion_scope": "trigger",
+        "business_status": "started",
+        "business_terminal": False,
         "created_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "dry_run": bool(dry_run),
