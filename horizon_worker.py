@@ -282,7 +282,19 @@ def main():
     existing_video_job_id = get_today_video_job_id()
     if existing_video_job_id:
         log(f"今日の記事URLの動画は既に存在します: {existing_video_job_id}")
+        final_job_id = existing_video_job_id
         success_count += 1
+        try:
+            res = urllib.request.urlopen(f"{KURAGE_API}/status/{existing_video_job_id}", timeout=10)
+            video_data = json.loads(res.read())
+            video_title = video_data.get("title", "AIニュース動画")
+        except Exception:
+            video_title = "AIニュース動画"
+
+        youtube_url = upload_youtube(existing_video_job_id, video_title)
+        if youtube_url:
+            success_count += 1
+            final_youtube_url = youtube_url
         ok = False
     else:
         ok = run_step(
