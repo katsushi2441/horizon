@@ -15,6 +15,30 @@ DEFAULT_POLL_INTERVAL = 30
 DEFAULT_WAIT_TIMEOUT = 3600
 
 
+def _standard_result(
+    *,
+    ok: bool,
+    status: str,
+    items: int = 0,
+    metrics: dict[str, Any] | None = None,
+    note: str = "",
+    artifacts: list[dict[str, Any]] | None = None,
+    error: Any = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    result = {
+        "ok": bool(ok),
+        "status": status,
+        "items": int(items or 0),
+        "metrics": metrics or {},
+        "note": note,
+        "artifacts": artifacts or [],
+        "error": error,
+    }
+    result.update(extra)
+    return result
+
+
 def _post_json(url: str, payload: dict[str, Any], timeout: int) -> tuple[int | None, dict[str, Any]]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = Request(
@@ -88,22 +112,23 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
         raise RuntimeError(f"Horizon trigger API did not start worker: {response}")
     if dry_run:
         result = response.get("result") if isinstance(response, dict) else None
-        return {
-            "status": "ok",
-            "completion_scope": "business",
-            "business_status": "dry_run",
-            "business_terminal": True,
-            "created_at": started_at.isoformat(),
-            "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "dry_run": True,
-            "url": url,
-            "source": payload["source"],
-            "http_status": status_code,
-            "trigger_started": False,
-            "items": 0,
-            "note": f"dry_run check running={bool(result.get('running')) if isinstance(result, dict) else False}",
-            "response": response,
-        }
+        return _standard_result(
+            ok=True,
+            status="ok",
+            items=0,
+            metrics={"created": 0, "dry_run": 1},
+            note=f"dry_run check running={bool(result.get('running')) if isinstance(result, dict) else False}",
+            **{
+                "created_at": started_at.isoformat(),
+                "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "dry_run": True,
+                "url": url,
+                "source": payload["source"],
+                "http_status": status_code,
+                "trigger_started": False,
+                "response": response,
+            },
+        )
 
     wait_timeout = int(kwargs.get("wait_timeout") or os.environ.get("AIXEC_HORIZON_WAIT_TIMEOUT", DEFAULT_WAIT_TIMEOUT))
     poll_interval = int(kwargs.get("poll_interval") or os.environ.get("AIXEC_HORIZON_POLL_INTERVAL", DEFAULT_POLL_INTERVAL))
@@ -144,21 +169,37 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
         raise RuntimeError("Horizon worker did not finish successfully: " + " / ".join(note_parts))
     if business_status == "ok" and items != 1:
         raise RuntimeError("Horizon worker finished without completed item: " + " / ".join(note_parts))
-    return {
-        "status": "warn" if business_status in {"warn", "warning"} else "ok",
-        "completion_scope": "business",
-        "business_status": business_status,
-        "business_terminal": True,
-        "created_at": started_at.isoformat(),
-        "finished_at": finished_at.isoformat(),
-        "dry_run": bool(dry_run),
-        "url": url,
-        "source": payload["source"],
-        "http_status": status_code,
-        "trigger_started": True,
-        "items": items,
-        "note": " / ".join(note_parts),
-        "response": response,
-        "last_check": last_check,
-        "worker_status": worker_status,
+    metrics = {
+        "created": items,
+        "articles_created": items,
+        "videos_created": items,
+        "youtube_uploaded": items,
     }
+    note_text = " / ".join(note_parts)
+    artifacts = []
+    note = str(worker_status.get("note") or "")
+    for token_part in note.split():
+        if token_part.startswith("youtube_urls="):
+            for url_part in token_part.replace("youtube_urls=", "").split(","):
+                if url_part.startswith("http"):
+                    artifacts.append({"type": "url", "label": "youtube", "url": url_part})
+    return _standard_result(
+        ok=True,
+        status="warn" if business_status in {"warn", "warning"} else "ok",
+        items=items,
+        metrics=metrics,
+        note=note_text,
+        artifacts=artifacts,
+        **{
+            "created_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "dry_run": bool(dry_run),
+            "url": url,
+            "source": payload["source"],
+            "http_status": status_code,
+            "trigger_started": True,
+            "response": response,
+            "last_check": last_check,
+            "worker_status": worker_status,
+        },
+    )
