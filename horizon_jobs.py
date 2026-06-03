@@ -86,28 +86,50 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
     trigger_started = bool(response.get("ok"))
     if not trigger_started:
         raise RuntimeError(f"Horizon trigger API did not start worker: {response}")
+    if dry_run:
+        result = response.get("result") if isinstance(response, dict) else None
+        return {
+            "status": "ok",
+            "completion_scope": "business",
+            "business_status": "dry_run",
+            "business_terminal": True,
+            "created_at": started_at.isoformat(),
+            "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "dry_run": True,
+            "url": url,
+            "source": payload["source"],
+            "http_status": status_code,
+            "trigger_started": False,
+            "items": 0,
+            "note": f"dry_run check running={bool(result.get('running')) if isinstance(result, dict) else False}",
+            "response": response,
+        }
 
     wait_timeout = int(kwargs.get("wait_timeout") or os.environ.get("AIXEC_HORIZON_WAIT_TIMEOUT", DEFAULT_WAIT_TIMEOUT))
     poll_interval = int(kwargs.get("poll_interval") or os.environ.get("AIXEC_HORIZON_POLL_INTERVAL", DEFAULT_POLL_INTERVAL))
     deadline = time.monotonic() + max(1, wait_timeout)
     last_check: dict[str, Any] = {}
+    worker_status: dict[str, Any] = {}
     while time.monotonic() < deadline:
         check_payload = {
             "api_token": str(token),
-            "dry_run": bool(dry_run),
+            "dry_run": True,
             "check_only": True,
             "source": payload["source"],
         }
         _, last_check = _post_json(url, check_payload, timeout)
         result = last_check.get("result") if isinstance(last_check, dict) else None
-        running = bool(result.get("running")) if isinstance(result, dict) else False
+        api_running = bool(result.get("running")) if isinstance(result, dict) else False
+        worker_status = _worker_status()
+        status_running = str(worker_status.get("status") or "").lower() == "running"
+        running = api_running or status_running
         if not running:
             break
         time.sleep(max(1, poll_interval))
     else:
-        raise TimeoutError(f"Horizon worker still running after {wait_timeout} seconds: {last_check}")
+        raise TimeoutError(f"Horizon worker still running after {wait_timeout} seconds: api={last_check} status={worker_status}")
 
-    worker_status = _worker_status()
+    worker_status = worker_status or _worker_status()
     business_status = str(worker_status.get("status") or "unknown")
     items = int(worker_status.get("items") or 0)
     finished_at = dt.datetime.now(dt.timezone.utc)
@@ -120,6 +142,8 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
         note_parts.append(str(worker_status.get("note")))
     if business_status not in {"ok", "warn", "warning"}:
         raise RuntimeError("Horizon worker did not finish successfully: " + " / ".join(note_parts))
+    if business_status == "ok" and items != 1:
+        raise RuntimeError("Horizon worker finished without completed item: " + " / ".join(note_parts))
     return {
         "status": "warn" if business_status in {"warn", "warning"} else "ok",
         "completion_scope": "business",
