@@ -235,6 +235,7 @@ def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
         return job["youtube_url"], False
 
     video_path = KURAGE_DIR / "storage" / "jobs" / job_id / "output.mp4"
+    thumbnail_path = KURAGE_DIR / "storage" / "jobs" / job_id / "thumbnail.jpg"
     if not video_path.exists():
         log(f"YouTube投稿スキップ: 動画ファイルなし {video_path}")
         return "", False
@@ -264,6 +265,8 @@ def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
         "--privacy", "public",
         "--json-out", str(json_out),
     ]
+    if thumbnail_path.exists():
+        cmd += ["--thumbnail-intro", str(thumbnail_path)]
     ok = run_step(cmd, "YouTube動画投稿", timeout=900, cwd=YOUTUBE_DIR)
     if not ok:
         return "", False
