@@ -24,12 +24,12 @@ import re
 SCRIPT_DIR = Path(__file__).parent
 HORIZON_DIR = SCRIPT_DIR / "Horizon"
 KURAGE_DIR = SCRIPT_DIR.parent / "kurage"
-YOUTUBE_DIR = SCRIPT_DIR.parent / "airadio-scripted-mv"
+YOUTUBE_DIR = Path(os.environ.get("YOUTUBE_DIR", str(SCRIPT_DIR.parent / "airadio-scripted-mv")))
 YOUTUBE_UPLOAD = YOUTUBE_DIR / "tools" / "youtube" / "upload_youtube.py"
 YOUTUBE_STORAGE = YOUTUBE_DIR / "storage" / "youtube"
-KURAGE_API = "http://localhost:18200"
-AIXSNS_API = "https://aixec.exbridge.jp/api.php?path=posts"
-DASHBOARD_API = "http://localhost:8081/worker/report"
+KURAGE_API = os.environ.get("KURAGE_API", "http://localhost:18200")
+AIXSNS_API = os.environ.get("AIXSNS_API", "https://aixec.exbridge.jp/api.php?path=posts")
+DASHBOARD_API = os.environ.get("DASHBOARD_API", "http://localhost:8081/worker/report")
 VWORK_ARTICLES_URL = "https://katsushi2441.github.io/vwork/articles/"
 HORIZONV_URL = "https://aiknowledgecms.exbridge.jp/horizonv.php"
 LOG_PATH = Path("/tmp/horizon_worker.log")
