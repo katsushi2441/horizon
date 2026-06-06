@@ -3,13 +3,16 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import subprocess
 import time
 from typing import Any
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 DEFAULT_HORIZON_RUN_WORKER_API = "https://aixec.exbridge.jp/api.php?path=horizon/run-worker"
+DEFAULT_WORKER_STATUS_API = "http://192.168.0.14:8081/worker/status"
 DEFAULT_TIMEOUT = 120
 DEFAULT_POLL_INTERVAL = 30
 DEFAULT_WAIT_TIMEOUT = 3600
@@ -64,8 +67,8 @@ def _post_json(url: str, payload: dict[str, Any], timeout: int) -> tuple[int | N
     return status_code, response
 
 
-def _worker_status() -> dict[str, Any]:
-    url = "https://aixec.exbridge.jp/api.php?path=worker/status"
+def _worker_status(url: str | None = None) -> dict[str, Any]:
+    url = url or os.environ.get("AIXEC_WORKER_STATUS_API") or DEFAULT_WORKER_STATUS_API
     req = Request(url, headers={"Accept": "application/json", "User-Agent": "rqdb4ai-horizon/0.1"})
     try:
         with urlopen(req, timeout=30) as res:
@@ -81,90 +84,68 @@ def _worker_status() -> dict[str, Any]:
 
 
 def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any]:
-    """Trigger the WEB/API-side Horizon worker. RQDB4AI does not run Horizon work."""
+    """Run Horizon worker directly on the RQDB4AI worker host."""
     started_at = dt.datetime.now(dt.timezone.utc)
-    url = str(
-        kwargs.get("submit_url")
-        or kwargs.get("run_worker_url")
-        or os.environ.get("AIXEC_HORIZON_RUN_WORKER_API")
-        or DEFAULT_HORIZON_RUN_WORKER_API
+    repo_dir = Path(
+        str(
+            kwargs.get("horizon_dir")
+            or os.environ.get("HORIZON_WORKER_DIR")
+            or Path(__file__).resolve().parent
+        )
     )
-    token = (
-        kwargs.get("api_token")
-        or kwargs.get("AIXEC_API_TOKEN")
-        or kwargs.get("aixec_api_token")
-        or os.environ.get("AIXEC_HORIZON_API_TOKEN")
-        or os.environ.get("AIXEC_API_TOKEN")
-    )
-    if not token:
-        raise RuntimeError("AIXEC_API_TOKEN is required to trigger Horizon worker")
+    worker = repo_dir / "horizon_worker.py"
+    status_api = str(kwargs.get("worker_status_api") or os.environ.get("AIXEC_WORKER_STATUS_API") or DEFAULT_WORKER_STATUS_API)
+    source = str(kwargs.get("source") or "rqdb4ai")
 
-    payload = {
-        "api_token": str(token),
-        "dry_run": bool(dry_run),
-        "source": str(kwargs.get("source") or "rqdb4ai"),
-    }
-    timeout = int(kwargs.get("timeout") or os.environ.get("AIXEC_HORIZON_TRIGGER_TIMEOUT", DEFAULT_TIMEOUT))
-    status_code, response = _post_json(url, payload, timeout)
+    if not worker.exists():
+        raise FileNotFoundError(str(worker))
 
-    trigger_started = bool(response.get("ok"))
-    if not trigger_started:
-        raise RuntimeError(f"Horizon trigger API did not start worker: {response}")
     if dry_run:
-        result = response.get("result") if isinstance(response, dict) else None
         return _standard_result(
             ok=True,
             status="ok",
             items=0,
             metrics={"created": 0, "dry_run": 1},
-            note=f"dry_run check running={bool(result.get('running')) if isinstance(result, dict) else False}",
+            note=f"dry_run direct worker exists path={worker}",
             **{
                 "created_at": started_at.isoformat(),
                 "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                 "dry_run": True,
-                "url": url,
-                "source": payload["source"],
-                "http_status": status_code,
-                "trigger_started": False,
-                "response": response,
+                "source": source,
+                "horizon_dir": str(repo_dir),
+                "worker": str(worker),
+                "worker_status_api": status_api,
             },
         )
 
     wait_timeout = int(kwargs.get("wait_timeout") or os.environ.get("AIXEC_HORIZON_WAIT_TIMEOUT", DEFAULT_WAIT_TIMEOUT))
-    poll_interval = int(kwargs.get("poll_interval") or os.environ.get("AIXEC_HORIZON_POLL_INTERVAL", DEFAULT_POLL_INTERVAL))
-    deadline = time.monotonic() + max(1, wait_timeout)
-    last_check: dict[str, Any] = {}
-    worker_status: dict[str, Any] = {}
-    while time.monotonic() < deadline:
-        check_payload = {
-            "api_token": str(token),
-            "dry_run": True,
-            "check_only": True,
-            "source": payload["source"],
-        }
-        _, last_check = _post_json(url, check_payload, timeout)
-        result = last_check.get("result") if isinstance(last_check, dict) else None
-        api_running = bool(result.get("running")) if isinstance(result, dict) else False
-        worker_status = _worker_status()
-        status_running = str(worker_status.get("status") or "").lower() == "running"
-        running = api_running or status_running
-        if not running:
-            break
-        time.sleep(max(1, poll_interval))
-    else:
-        raise TimeoutError(f"Horizon worker still running after {wait_timeout} seconds: api={last_check} status={worker_status}")
+    env = dict(os.environ)
+    env.setdefault("OLLAMA_API_KEY", str(kwargs.get("ollama_api_key") or "ollama"))
+    env.setdefault("KURAGE_API", str(kwargs.get("kurage_api") or os.environ.get("KURAGE_API") or "http://exbridge.ddns.net:18200"))
+    env.setdefault("DASHBOARD_API", str(kwargs.get("dashboard_api") or os.environ.get("DASHBOARD_API") or "http://192.168.0.14:8081/worker/report"))
+    env.setdefault("AIXSNS_API", str(kwargs.get("aixsns_api") or os.environ.get("AIXSNS_API") or "https://aixec.exbridge.jp/api.php?path=posts"))
+    if kwargs.get("youtube_dir"):
+        env["YOUTUBE_DIR"] = str(kwargs["youtube_dir"])
 
-    worker_status = worker_status or _worker_status()
+    proc = subprocess.run(
+        ["python3", str(worker)],
+        cwd=str(repo_dir),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=wait_timeout,
+    )
+    output = proc.stdout or ""
+    worker_status = _worker_status(status_api)
     business_status = str(worker_status.get("status") or "unknown")
     items = int(worker_status.get("items") or 0)
     finished_at = dt.datetime.now(dt.timezone.utc)
-    note_parts = [f"worker_status={business_status}", f"items={items}"]
-    if response.get("job_id"):
-        note_parts.append(f"job_id={response.get('job_id')}")
-    if response.get("message"):
-        note_parts.append(str(response.get("message")))
+    note_parts = [f"worker_status={business_status}", f"items={items}", f"exit={proc.returncode}"]
     if worker_status.get("note"):
         note_parts.append(str(worker_status.get("note")))
+    if proc.returncode != 0:
+        raise RuntimeError("Horizon worker process failed: " + " / ".join(note_parts) + "\n" + output[-4000:])
     if business_status not in {"ok", "warn", "warning"}:
         raise RuntimeError("Horizon worker did not finish successfully: " + " / ".join(note_parts))
     if business_status == "ok" and items != 1:
@@ -194,12 +175,11 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
             "created_at": started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "dry_run": bool(dry_run),
-            "url": url,
-            "source": payload["source"],
-            "http_status": status_code,
-            "trigger_started": True,
-            "response": response,
-            "last_check": last_check,
+            "source": source,
+            "horizon_dir": str(repo_dir),
+            "worker": str(worker),
+            "exit_code": proc.returncode,
+            "output_tail": output[-4000:],
             "worker_status": worker_status,
         },
     )
