@@ -11,6 +11,7 @@
 """
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -19,12 +20,12 @@ from pathlib import Path
 
 import requests
 
-HORIZON_DIR = Path(__file__).parent / "Horizon"
+HORIZON_DIR = Path(os.environ.get("HORIZON_DIR") or (Path(__file__).parent / "Horizon"))
 SUMMARIES_DIR = HORIZON_DIR / "data" / "summaries"
-KURAGE_JOBS_DIR = Path("/home/kojima/exdirect/kurage/storage/jobs")
-KURAGE_API = "http://exbridge.ddns.net:18200"
-VWORK_ARTICLES_URL = "https://katsushi2441.github.io/vwork/articles/"
-VWORK_ARTICLES_DIR = Path("/home/kojima/exdirect/vwork/articles")
+KURAGE_JOBS_DIR = Path(os.environ.get("KURAGE_JOBS_DIR", "/home/kojima/exdirect/kurage/storage/jobs"))
+KURAGE_API = os.environ.get("KURAGE_API", "http://exbridge.ddns.net:18200")
+VWORK_ARTICLES_URL = os.environ.get("VWORK_ARTICLES_URL", "https://katsushi2441.github.io/vwork/articles/")
+VWORK_ARTICLES_DIR = Path(os.environ.get("VWORK_ARTICLES_DIR") or Path(os.environ.get("VWORK_DIR", "/home/kojima/exdirect/vwork")) / "articles")
 
 
 def log(msg: str):

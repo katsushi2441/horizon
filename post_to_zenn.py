@@ -14,14 +14,14 @@ import time
 from datetime import date
 from pathlib import Path
 
-HORIZON_DIR = Path(__file__).parent / "Horizon"
+HORIZON_DIR = Path(os.environ.get("HORIZON_DIR") or (Path(__file__).parent / "Horizon"))
 SUMMARIES_DIR = HORIZON_DIR / "data" / "summaries"
-VWORK_DIR = Path("/home/kojima/exdirect/vwork")
+VWORK_DIR = Path(os.environ.get("VWORK_DIR", "/home/kojima/exdirect/vwork"))
 ARTICLES_DIR = VWORK_DIR / "articles"
-KURAGE_JOBS_DIR = Path("/home/kojima/exdirect/kurage/storage/jobs")
-DASHBOARD_API = "http://localhost:8081/worker/report"
-OLLAMA_URL = "http://192.168.0.14:11434"
-OLLAMA_MODEL = "gemma4:e4b"
+KURAGE_JOBS_DIR = Path(os.environ.get("KURAGE_JOBS_DIR", "/home/kojima/exdirect/kurage/storage/jobs"))
+DASHBOARD_API = os.environ.get("DASHBOARD_API", "http://localhost:8081/worker/report")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://192.168.0.14:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
 
 def log(msg: str):
