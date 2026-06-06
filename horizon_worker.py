@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from urllib.parse import urljoin
 from datetime import date
 from pathlib import Path
 import glob
@@ -213,7 +214,12 @@ def job_json_path(job_id: str) -> Path:
 def load_job(job_id: str) -> dict:
     path = job_json_path(job_id)
     if not path.exists():
-        return {}
+        try:
+            res = urllib.request.urlopen(f"{KURAGE_API}/status/{job_id}", timeout=10)
+            return json.loads(res.read())
+        except Exception as exc:
+            log(f"job API読込失敗: {exc}")
+            return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -228,6 +234,23 @@ def save_job(job_id: str, data: dict):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def download_kurage_asset(job_id: str, job: dict, key: str, suffix: str) -> Path:
+    url = job.get(key) or ""
+    if not url:
+        return Path("")
+    if url.startswith("/"):
+        url = urljoin(KURAGE_API.rstrip("/") + "/", url.lstrip("/"))
+    out_dir = Path("/tmp/horizon_youtube") / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{key}{suffix}"
+    try:
+        urllib.request.urlretrieve(url, out_path)
+        return out_path
+    except Exception as exc:
+        log(f"Kurage asset download失敗: {key} {url} {exc}")
+        return Path("")
+
+
 def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
     job = load_job(job_id)
     if job.get("youtube_url"):
@@ -237,12 +260,21 @@ def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
     video_path = KURAGE_DIR / "storage" / "jobs" / job_id / "output.mp4"
     thumbnail_path = KURAGE_DIR / "storage" / "jobs" / job_id / "thumbnail.jpg"
     if not video_path.exists():
-        log(f"YouTube投稿スキップ: 動画ファイルなし {video_path}")
-        return "", False
+        downloaded = download_kurage_asset(job_id, job, "video_url", ".mp4")
+        if downloaded.exists():
+            video_path = downloaded
+        else:
+            log(f"YouTube投稿スキップ: 動画ファイルなし {video_path}")
+            return "", False
+    if not thumbnail_path.exists():
+        downloaded_thumb = download_kurage_asset(job_id, job, "thumbnail_url", ".jpg")
+        if downloaded_thumb.exists():
+            thumbnail_path = downloaded_thumb
     if not YOUTUBE_UPLOAD.exists():
         log(f"YouTube投稿スキップ: upload_youtube.pyなし {YOUTUBE_UPLOAD}")
         return "", False
 
+    YOUTUBE_STORAGE.mkdir(parents=True, exist_ok=True)
     source_article_url = job.get("tweet_url") or ""
     horizon_url = f"{HORIZONV_URL}?id={job_id}"
     description = (
