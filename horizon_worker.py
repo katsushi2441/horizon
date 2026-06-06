@@ -290,6 +290,8 @@ def main():
     log("====== horizon_worker 開始 ======")
     ssh_sock = find_ssh_agent()
     log(f"SSH_AUTH_SOCK: {ssh_sock or '(未検出)'}")
+    log(f"Python: {sys.executable}")
+    log(f"PYTHONPATH: {os.environ.get('PYTHONPATH', '')}")
 
     report_worker("running", 0, "Horizonニュース収集中")
     today = date.today().strftime("%Y-%m-%d")
