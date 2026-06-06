@@ -350,52 +350,61 @@ def main():
 
     # Step 3: 動画生成
     report_worker("running", videos_created, "動画生成中")
+    video_done = False
+    video_title = "AIニュース動画"
+    youtube_url = ""
     if created_article:
         source_article_url = article_url(created_article)
-        ok = run_step(
-            ["python3", "generate_news_videos.py", "--article-url", source_article_url],
-            "ニュース動画生成",
-            timeout=120,
-        )
-    else:
-        ok = False
-        log("新規記事がないため動画生成をスキップ")
-
-    if ok:
-        job_id = parse_job_id(run_step.last_stdout) or get_video_job_id_for_article(source_article_url)
-        if job_id:
+        retry_max_values = [5, 3, 2]
+        retry_count = int(os.environ.get("HORIZON_VIDEO_RETRIES", "3") or "3")
+        for attempt, max_items in enumerate(retry_max_values[:max(1, retry_count)], 1):
+            ok = run_step(
+                ["python3", "generate_news_videos.py", "--article-url", source_article_url, "--max", str(max_items)],
+                f"ニュース動画生成 attempt={attempt} max={max_items}",
+                timeout=120,
+            )
+            if not ok:
+                continue
+            job_id = parse_job_id(run_step.last_stdout) or get_video_job_id_for_article(source_article_url)
+            if not job_id:
+                log("新規動画job_idなし")
+                continue
             job_ids.append(job_id)
             log(f"動画job_id: {job_id} 完了待ち...")
             if wait_video_done(job_id):
-                videos_created += 1
-                # 動画タイトル取得
-                try:
-                    res = urllib.request.urlopen(f"{KURAGE_API}/status/{job_id}", timeout=10)
-                    video_data = json.loads(res.read())
-                    video_title = video_data.get("title", "AIニュース動画")
-                except Exception:
-                    video_title = "AIニュース動画"
+                video_done = True
+                break
+            log(f"動画生成失敗のため再試行します: job_id={job_id}")
+    else:
+        log("新規記事がないため動画生成をスキップ")
 
-                youtube_url, uploaded = upload_youtube(job_id, video_title)
-                if uploaded:
-                    youtube_uploaded += 1
-                    youtube_urls.append(youtube_url)
-                elif youtube_url:
-                    skipped_existing += 1
+    if video_done and job_ids:
+        job_id = job_ids[-1]
+        if job_id:
+            videos_created += 1
+            # 動画タイトル取得
+            try:
+                res = urllib.request.urlopen(f"{KURAGE_API}/status/{job_id}", timeout=10)
+                video_data = json.loads(res.read())
+                video_title = video_data.get("title", "AIニュース動画")
+            except Exception:
+                video_title = "AIニュース動画"
 
-                youtube_block = f"YouTube:\n{youtube_url}\n\n" if youtube_url else ""
-                video_post_id = post_to_sns(
-                    f"🎬 {video_title}\n\n"
-                    f"Horizon-AIニュースからKurageがショート動画を自動生成しました。\n\n"
-                    f"{HORIZONV_URL}?id={job_id}\n\n"
-                    f"{youtube_block}"
-                    f"株式会社エクスブリッジ https://exbridge.jp/"
-                )
-            else:
-                failed += 1
-        else:
-            skipped_existing += 1
-            log("新規動画job_idなし")
+            youtube_url, uploaded = upload_youtube(job_id, video_title)
+            if uploaded:
+                youtube_uploaded += 1
+                youtube_urls.append(youtube_url)
+            elif youtube_url:
+                skipped_existing += 1
+
+            youtube_block = f"YouTube:\n{youtube_url}\n\n" if youtube_url else ""
+            video_post_id = post_to_sns(
+                f"🎬 {video_title}\n\n"
+                f"Horizon-AIニュースからKurageがショート動画を自動生成しました。\n\n"
+                f"{HORIZONV_URL}?id={job_id}\n\n"
+                f"{youtube_block}"
+                f"株式会社エクスブリッジ https://exbridge.jp/"
+            )
     elif created_article:
         failed += 1
 

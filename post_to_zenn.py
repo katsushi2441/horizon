@@ -43,6 +43,8 @@ def find_ssh_agent() -> str:
 
 def report_worker(status: str, items: int, note: str = ""):
     import json, urllib.request
+    if os.environ.get("POST_TO_ZENN_REPORT", "").lower() not in {"1", "true", "yes"}:
+        return
     try:
         payload = json.dumps({"name": "horizon_zenn", "status": status, "items": items, "note": note}).encode()
         req = urllib.request.Request(DASHBOARD_API, data=payload, headers={"Content-Type": "application/json"}, method="POST")
