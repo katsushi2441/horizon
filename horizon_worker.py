@@ -298,7 +298,7 @@ def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
         "--json-out", str(json_out),
     ]
     if thumbnail_path.exists():
-        cmd += ["--thumbnail-intro", str(thumbnail_path)]
+        cmd += ["--thumbnail-intro", str(thumbnail_path), "--thumbnail-intro-seconds", "3.0"]
     youtube_pythonpath = os.pathsep.join(
         part for part in os.environ.get("PYTHONPATH", "").split(os.pathsep)
         if part and "/python3.11/" not in part
