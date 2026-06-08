@@ -16,9 +16,9 @@ from pathlib import Path
 
 HORIZON_DIR = Path(os.environ.get("HORIZON_DIR") or (Path(__file__).parent / "Horizon"))
 SUMMARIES_DIR = HORIZON_DIR / "data" / "summaries"
-VWORK_DIR = Path(os.environ.get("VWORK_DIR", "/home/kojima/exdirect/vwork"))
+VWORK_DIR = Path(os.environ.get("VWORK_DIR", "/home/kojima/work/vwork"))
 ARTICLES_DIR = VWORK_DIR / "articles"
-KURAGE_JOBS_DIR = Path(os.environ.get("KURAGE_JOBS_DIR", "/home/kojima/exdirect/kurage/storage/jobs"))
+KURAGE_JOBS_DIR = Path(os.environ.get("KURAGE_JOBS_DIR", "/home/kojima/work/kurage/storage/jobs"))
 DASHBOARD_API = os.environ.get("DASHBOARD_API", "http://localhost:8081/worker/report")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://192.168.0.14:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
@@ -134,11 +134,40 @@ STOP_TOPIC_TOKENS = {
     "https", "http", "www", "com", "the", "and", "with", "from", "that",
     "this", "into", "using", "uses", "lets", "new", "news", "blog", "study",
     "tool", "tools", "model", "models", "agent", "agents", "open", "source",
+    "latest", "today", "daily", "summary", "content", "technology", "tech",
 }
+
+
+TOPIC_ALIASES = {
+    "gemma4": ["gemma 4", "gemma4", "gemma", "ジェマ"],
+    "llamacpp": ["llama.cpp", "llamacpp"],
+    "mtp": ["mtp", "multi-threading", "tensor parallelism", "多重スレッド"],
+    "fp8": ["fp8"],
+    "qat": ["qat", "量子化アウェア", "量子化"],
+    "qwen": ["qwen"],
+    "deepswe": ["deepswe"],
+    "sonnet": ["sonnet"],
+    "avatar3d": ["3d avatar", "3dアバター", "アバター"],
+    "language_control": ["language instead of buttons", "natural language", "自然言語", "言語による", "言葉"],
+    "datasette": ["datasette", "構造化データ", "構造化されたデータ", "markdown", "sql", "svg"],
+    "agent_edit": ["agent-edit", "編集能力", "データ編集", "編集者"],
+    "career_rebuild": ["addiction", "prison", "felony", "依存症", "投獄", "重罪", "困難", "キャリア", "再起"],
+    "locals": ["local llm", "localllama", "ローカルllm", "ローカルai", "ローカル環境"],
+}
+
+
+def normalize_topic_text(text: str) -> str:
+    lowered = text.lower()
+    extras = []
+    for token, aliases in TOPIC_ALIASES.items():
+        if any(alias.lower() in lowered for alias in aliases):
+            extras.append(token)
+    return text + ("\n" + " ".join(extras) if extras else "")
 
 
 def topic_tokens(text: str) -> set[str]:
     tokens = set()
+    text = normalize_topic_text(text)
     for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._+-]{2,}", text.lower()):
         token = token.strip("._+-")
         if len(token) < 3 or token in STOP_TOPIC_TOKENS:
@@ -198,11 +227,14 @@ def filter_used_summary_sections(summary_text: str, post_date: str) -> str:
         title = re.sub(r"^\n?##\s*", "", first_line)
         title = re.sub(r"\]\([^)]+\)", "]", title)
         title = title.strip("[] ")
-        title_tokens = topic_tokens(title)
-        overlap = title_tokens & used_tokens
+        section_tokens = topic_tokens(title + "\n" + section[:1600])
+        overlap = section_tokens & used_tokens
         exact = title.lower() and title.lower() in used_lower
-        has_strong_overlap = any(len(token) >= 7 for token in overlap)
-        if exact or has_strong_overlap or (len(overlap) >= 2 and len(overlap) / max(1, len(title_tokens)) >= 0.35):
+        strong_overlap = {
+            token for token in overlap
+            if token in TOPIC_ALIASES or len(token) >= 7
+        }
+        if exact or len(strong_overlap) >= 1 or (len(overlap) >= 2 and len(overlap) / max(1, len(section_tokens)) >= 0.18):
             removed += 1
             log(f"同日既存記事との重複を除外: {title}")
             continue
@@ -328,6 +360,9 @@ def main():
 
         summary_text = summary_path.read_text(encoding="utf-8")
         summary_text = filter_used_summary_sections(summary_text, post_date)
+        remaining_sections = re.findall(r"(?m)^## \[", summary_text)
+        if not remaining_sections:
+            raise RuntimeError("同日既存記事と重複しないsummary項目が残っていません")
 
         article_path = next_article_path(post_date)
         log(f"投稿先記事: {article_path.name}")
