@@ -299,7 +299,17 @@ def upload_youtube(job_id: str, title: str) -> tuple[str, bool]:
     ]
     if thumbnail_path.exists():
         cmd += ["--thumbnail-intro", str(thumbnail_path)]
-    ok = run_step(cmd, "YouTube動画投稿", timeout=900, cwd=YOUTUBE_DIR)
+    youtube_pythonpath = os.pathsep.join(
+        part for part in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if part and "/python3.11/" not in part
+    )
+    ok = run_step(
+        cmd,
+        "YouTube動画投稿",
+        timeout=900,
+        extra_env={"PYTHONPATH": youtube_pythonpath},
+        cwd=YOUTUBE_DIR,
+    )
     if not ok:
         return "", False
     try:
