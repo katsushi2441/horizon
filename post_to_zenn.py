@@ -68,8 +68,11 @@ def translate_to_japanese(summary_text: str, post_date: str) -> str:
 
 要件:
 - 記事全体のH1タイトルは、その日の上位ニュースの意味が伝わる具体的なタイトルにする
-- タイトル例: 「AIが変える未来：インフラから金融まで最前線速報」
+- H1タイトルには、元ニュースに出てくる企業名・個人名・製品名・モデル名などの固有名詞を1〜2個以上入れる
+- 例: OpenAI、Sam Altman、Microsoft、NVIDIA、Google、Anthropic、Gemma、Qwen、Simon Willison など
+- タイトル例: 「OpenAIとSam Altmanで読むAIインフラ競争」
 - 「AI・Web3ニュースまとめ」のような汎用タイトルだけで終わらせない
+- 「AIが描く未来」「AIの最前線」「AIが変える未来」のような抽象的なタイトルだけにしない
 - 各見出しは日本語に翻訳する
 - 各記事を2〜3文の日本語で要約する
 - 重要なニュース上位5〜7件に絞る
@@ -156,6 +159,37 @@ TOPIC_ALIASES = {
 }
 
 
+GENERIC_TITLE_PHRASES = (
+    "AI・Web3ニュースまとめ",
+    "AIニュースまとめ",
+    "Web3ニュースまとめ",
+    "AIが描く未来",
+    "AIが変える未来",
+    "AIの最前線",
+    "最新AIニュース",
+    "AIニュース日報",
+)
+
+
+PROPER_NOUN_STOPWORDS = {
+    "Horizon", "Daily", "From", "Tags", "Discussion", "Jun", "Reddit",
+    "HackerNews", "RSS", "LocalLLaMA", "LLM", "LLMs", "NLP", "AI",
+    "ML", "Web3", "Startup", "Startups", "News", "Blog", "Medium",
+    "Markdown", "SQL", "SVG",
+}
+
+
+KNOWN_PROPER_NOUNS = (
+    "Sam Altman", "サム・アルトマン", "孫正義", "ビル・ゲイツ", "Bill Gates",
+    "Elon Musk", "イーロン・マスク", "OpenAI", "Microsoft", "Google",
+    "Anthropic", "NVIDIA", "Meta", "Apple", "Amazon", "Tesla", "xAI",
+    "SoftBank", "Oracle", "Stargate", "Gemma 4", "Gemma4", "Qwen",
+    "DeepSWE", "Sonnet", "Claude", "Llama", "llama.cpp", "Datasette",
+    "datasette-agent-edit", "Simon Willison", "Helion", "Stellar",
+    "MoneyGram", "AllUnity",
+)
+
+
 def normalize_topic_text(text: str) -> str:
     lowered = text.lower()
     extras = []
@@ -174,6 +208,99 @@ def topic_tokens(text: str) -> set[str]:
             continue
         tokens.add(token)
     return tokens
+
+
+def _candidate_score(name: str, text: str) -> tuple[int, int, int]:
+    """固有名詞候補の並び順。出現回数、早さ、具体性を優先する。"""
+    lower_text = text.lower()
+    lower_name = name.lower()
+    count = lower_text.count(lower_name)
+    first = lower_text.find(lower_name)
+    if first < 0:
+        first = 10**9
+    specificity = len(name.replace(" ", "").replace("・", ""))
+    return (-count, first, -specificity)
+
+
+def extract_proper_nouns(text: str, limit: int = 4) -> list[str]:
+    """Horizon元データからタイトルに使える企業名・個人名・製品名を拾う。"""
+    candidates: set[str] = set()
+
+    for name in KNOWN_PROPER_NOUNS:
+        if re.search(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", text, re.IGNORECASE):
+            candidates.add(name)
+
+    titleish_parts = []
+    titleish_parts.extend(re.findall(r"(?m)^## \[([^\]]+)\]", text))
+    titleish_parts.extend(re.findall(r"(?m)^\d+\.\s+\[([^\]]+)\]", text))
+    titleish_parts.extend(re.findall(r"`([^`]+)`", text))
+    titleish = "\n".join(titleish_parts)
+
+    # CamelCase、英大文字始まり、数字入りモデル名、llama.cpp のような製品名を拾う。
+    patterns = [
+        r"\b[A-Z][A-Za-z0-9.+-]{2,}(?:\s+[A-Z0-9][A-Za-z0-9.+-]{1,}){0,2}\b",
+        r"\b[A-Za-z]+[0-9][A-Za-z0-9._+-]*\b",
+        r"\b[A-Za-z0-9._+-]*[A-Z][A-Za-z0-9._+-]*[0-9][A-Za-z0-9._+-]*\b",
+        r"\b[a-z][a-z0-9]+(?:\.[a-z0-9]+)+\b",
+        r"\b[a-z][a-z0-9]+(?:-[a-z0-9]+){1,}\b",
+    ]
+    for pattern in patterns:
+        for raw in re.findall(pattern, titleish):
+            name = raw.strip(" .,:;()[]")
+            if len(name) < 3 or name in PROPER_NOUN_STOPWORDS:
+                continue
+            if name.lower() in {w.lower() for w in PROPER_NOUN_STOPWORDS}:
+                continue
+            candidates.add(name)
+
+    # 日本語の人名らしい「氏」付き表現も拾う。
+    for raw in re.findall(r"([一-鿿ァ-ンー・]{2,12})氏", text):
+        if raw not in {"ユーザー", "著者"}:
+            candidates.add(raw)
+
+    lower_text = text.lower()
+    if "llama.cpp" in lower_text:
+        candidates.discard("Llama")
+    if "gemma4" in lower_text or "gemma 4" in lower_text:
+        candidates.discard("Gemma")
+    if "datasette-agent-edit" in lower_text:
+        candidates.discard("Datasette")
+
+    ordered = sorted(candidates, key=lambda name: _candidate_score(name, text))
+    return ordered[:limit]
+
+
+def title_has_proper_noun(title: str, proper_nouns: list[str]) -> bool:
+    lowered = title.lower()
+    return any(name.lower() in lowered for name in proper_nouns)
+
+
+def strengthen_title_with_proper_nouns(title: str, source_text: str) -> str:
+    """生成タイトルが抽象的な場合、元ニュースの固有名詞を前に出す。"""
+    proper_nouns = extract_proper_nouns(source_text)
+    if not proper_nouns or title_has_proper_noun(title, proper_nouns):
+        return title
+
+    month_day = ""
+    m = re.search(r"\s(\d{2}-\d{2})$", title)
+    if m:
+        month_day = m.group(1)
+        title = title[:m.start()].strip()
+
+    is_generic = any(phrase in title for phrase in GENERIC_TITLE_PHRASES)
+    picked = proper_nouns[:2]
+    prefix = "と".join(picked)
+    if is_generic:
+        strengthened = f"{prefix}で読むAIニュース"
+    else:
+        strengthened = f"{prefix}で読む：{title}"
+
+    if len(strengthened) > 58 and len(picked) > 1:
+        prefix = picked[0]
+        strengthened = f"{prefix}で読む：{title}"
+    if len(strengthened) > 68:
+        strengthened = strengthened[:67].rstrip("：、・ ") + "…"
+    return f"{strengthened} {month_day}".strip()
 
 
 def collect_used_topic_text(post_date: str) -> str:
@@ -244,13 +371,15 @@ def filter_used_summary_sections(summary_text: str, post_date: str) -> str:
     return "".join(kept)
 
 
-def extract_h1_title(body: str, post_date: str) -> str:
+def extract_h1_title(body: str, post_date: str, source_text: str = "") -> str:
     """本文のH1見出しをタイトルとして抽出する。なければ日付ベースのタイトルを返す。"""
     import re
     m = re.search(r'^#\s+(.+)$', body, re.MULTILINE)
     if m:
         title = re.sub(r'^[^\w　-鿿]+', '', m.group(1)).strip()
-        if title in ("AI・Web3ニュースまとめ", "AIニュースまとめ", "Web3ニュースまとめ"):
+        if title in ("AI・Web3ニュースまとめ", "AIニュースまとめ", "Web3ニュースまとめ") or any(
+            phrase in title for phrase in GENERIC_TITLE_PHRASES
+        ):
             headings = re.findall(r'^##\s+(.+)$', body, re.MULTILINE)
             cleaned = [re.sub(r'^[^\w　-鿿]+', '', h).strip() for h in headings]
             cleaned = [h.split('**', 1)[0].strip() for h in cleaned if h]
@@ -258,8 +387,8 @@ def extract_h1_title(body: str, post_date: str) -> str:
                 title = "・".join(cleaned[:2])
         # 日付を付加（例: 05-29）
         month_day = post_date[5:]  # "2026-05-29" → "05-29"
-        return f"{title} {month_day}"
-    return f"AI・Web3ニュースまとめ {post_date[5:]}"
+        return strengthen_title_with_proper_nouns(f"{title} {month_day}", source_text)
+    return strengthen_title_with_proper_nouns(f"AI・Web3ニュースまとめ {post_date[5:]}", source_text)
 
 
 def to_zenn_markdown(summary_text: str, post_date: str) -> tuple[str, str]:
@@ -268,7 +397,7 @@ def to_zenn_markdown(summary_text: str, post_date: str) -> tuple[str, str]:
     """
     log("Ollamaで日本語に変換中...")
     body = translate_to_japanese(summary_text, post_date)
-    article_title = extract_h1_title(body, post_date)
+    article_title = extract_h1_title(body, post_date, summary_text)
     log(f"記事タイトル: {article_title}")
 
     frontmatter = f"""---
