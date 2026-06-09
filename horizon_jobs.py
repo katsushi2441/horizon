@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import time
 from typing import Any
@@ -83,6 +84,14 @@ def _worker_status(url: str | None = None) -> dict[str, Any]:
     return {"status": "unknown", "items": 0, "note": "horizon-worker-enqueue not found"}
 
 
+def _extract_metric(worker_status: dict[str, Any], key: str) -> int:
+    note = str(worker_status.get("note") or "")
+    match = re.search(rf"(?:^|\\s){re.escape(key)}=(\\d+)", note)
+    if not match:
+        return 0
+    return int(match.group(1))
+
+
 def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any]:
     """Run Horizon worker directly on the RQDB4AI worker host."""
     started_at = dt.datetime.now(dt.timezone.utc)
@@ -156,7 +165,8 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
         "created": items,
         "articles_created": items,
         "videos_created": items,
-        "youtube_uploaded": items,
+        "youtube_uploaded": int(_extract_metric(worker_status, "youtube_uploaded") or 0),
+        "mail_posts": int(_extract_metric(worker_status, "mail_posts") or 0),
     }
     note_text = " / ".join(note_parts)
     artifacts = []

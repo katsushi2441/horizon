@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Horizon日次ワーカー — 記事生成・動画生成・AIxSNS告知を一括実行
+"""Horizonワーカー — 記事生成・動画生成・AIxSNS告知を一括実行
 
-毎日16:30にcronで実行される。
+kdeck/RQDB4AIから6時間ごと、1日4回を目安に実行される。
 1. Horizon でニュース収集・summary生成
-2. post_to_zenn.py で記事投稿（GitHub Pages + Zenn）
+2. post_to_zenn.py で記事投稿（GitHub Pages）
 3. AIxSNS で記事告知（author=kurage）
-4. generate_news_videos.py で動画生成
-5. YouTube に動画投稿
+4. はてなブログ/Bloggerへメール投稿
+5. generate_news_videos.py で動画生成
 6. AIxSNS で動画告知（author=kurage）
 7. dashboard に実行結果を報告
+
+YouTubeへの自動アップロードは通常行わない。
+明示的に HORIZON_AUTO_YOUTUBE_UPLOAD=1 を設定した場合だけ実行する。
 """
 import json
 import os
@@ -31,10 +34,28 @@ YOUTUBE_STORAGE = YOUTUBE_DIR / "storage" / "youtube"
 KURAGE_API = os.environ.get("KURAGE_API", "http://localhost:18200")
 AIXSNS_API = os.environ.get("AIXSNS_API", "https://aixec.exbridge.jp/api.php?path=posts")
 DASHBOARD_API = os.environ.get("DASHBOARD_API", "http://localhost:8081/worker/report")
+VWORK_DIR = Path(os.environ.get("VWORK_DIR", str(SCRIPT_DIR.parent / "vwork")))
+HORIZON_AUTO_YOUTUBE_UPLOAD = os.environ.get("HORIZON_AUTO_YOUTUBE_UPLOAD", "0").strip().lower() in {"1", "true", "yes", "on"}
 VWORK_ARTICLES_URL = "https://katsushi2441.github.io/vwork/articles/"
 HORIZONV_URL = "https://aiknowledgecms.exbridge.jp/horizonv.php"
 LOG_PATH = Path("/tmp/horizon_worker.log")
 LOCK_PATH = Path("/tmp/horizon_worker_api.pid")
+
+
+def load_env_file(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if not path.exists():
+        return env
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            env[key] = value
+    return env
 
 
 def log(msg: str):
@@ -82,6 +103,37 @@ def post_to_sns(content: str) -> str:
     except Exception as e:
         log(f"AIxSNS投稿失敗: {e}")
         return ""
+
+
+def post_article_to_hatena_blogger(article: Path) -> bool:
+    script = VWORK_DIR / "scripts" / "post_to_hatena.py"
+    if not article.exists():
+        log(f"はてな/Blogger投稿スキップ: 記事なし {article}")
+        return False
+    if not script.exists():
+        log(f"はてな/Blogger投稿スキップ: スクリプトなし {script}")
+        return False
+
+    env = {**os.environ}
+    # The mail credentials live outside this repo. Do not print them; only pass
+    # them through to the existing VWork mail posting script.
+    for key, value in load_env_file(SCRIPT_DIR.parent / "aixec" / ".env").items():
+        env.setdefault(key, value)
+
+    required = ["SMTP_FROM", "SMTP_PASSWORD", "HATENA_POST_EMAIL"]
+    missing = [key for key in required if not env.get(key)]
+    if missing:
+        log(f"はてな/Blogger投稿スキップ: 環境変数不足 {','.join(missing)}")
+        return False
+
+    ok = run_step(
+        ["python3", str(script), str(article)],
+        "はてな/Bloggerメール投稿",
+        timeout=300,
+        extra_env=env,
+        cwd=VWORK_DIR,
+    )
+    return ok
 
 
 def run_step(cmd: list, desc: str, timeout: int = 1800, extra_env: dict = None, cwd: Path = SCRIPT_DIR) -> bool:
@@ -342,6 +394,7 @@ def main():
     articles_created = 0
     videos_created = 0
     youtube_uploaded = 0
+    mail_posts = 0
     skipped_existing = 0
     failed = 0
     job_ids = []
@@ -377,6 +430,10 @@ def main():
             articles_created += 1
             article_title = get_article_title(created_article)
             source_article_url = article_url(created_article)
+            if post_article_to_hatena_blogger(created_article):
+                mail_posts += 1
+            else:
+                failed += 1
             if article_title:
                 article_post_id = post_to_sns(
                     f"📰 {article_title}\n\n"
@@ -432,12 +489,15 @@ def main():
             except Exception:
                 video_title = "AIニュース動画"
 
-            youtube_url, uploaded = upload_youtube(job_id, video_title)
-            if uploaded:
-                youtube_uploaded += 1
-                youtube_urls.append(youtube_url)
-            elif youtube_url:
-                skipped_existing += 1
+            if HORIZON_AUTO_YOUTUBE_UPLOAD:
+                youtube_url, uploaded = upload_youtube(job_id, video_title)
+                if uploaded:
+                    youtube_uploaded += 1
+                    youtube_urls.append(youtube_url)
+                elif youtube_url:
+                    skipped_existing += 1
+            else:
+                log("YouTube自動アップロードは無効です")
 
             youtube_block = f"YouTube:\n{youtube_url}\n\n" if youtube_url else ""
             video_post_id = post_to_sns(
@@ -452,7 +512,9 @@ def main():
 
     note = (
         f"articles_created={articles_created} videos_created={videos_created} "
-        f"youtube_uploaded={youtube_uploaded} skipped_existing={skipped_existing} failed={failed}"
+        f"mail_posts={mail_posts} youtube_uploaded={youtube_uploaded} "
+        f"youtube_auto_upload={'enabled' if HORIZON_AUTO_YOUTUBE_UPLOAD else 'disabled'} "
+        f"skipped_existing={skipped_existing} failed={failed}"
     )
     if job_ids:
         note += f" job_ids={','.join(job_ids)}"
@@ -462,8 +524,8 @@ def main():
     if sns_count:
         note += f" sns_posts={sns_count}"
 
-    if youtube_uploaded >= 1:
-        report_worker("ok", youtube_uploaded, note)
+    if videos_created >= 1 and failed == 0:
+        report_worker("ok", videos_created, note)
     elif failed == 0:
         report_worker("warn", videos_created, note)
     else:
