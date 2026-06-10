@@ -31,7 +31,7 @@ KURAGE_DIR = SCRIPT_DIR.parent / "kurage"
 YOUTUBE_DIR = Path(os.environ.get("YOUTUBE_DIR", str(SCRIPT_DIR.parent / "airadio-scripted-mv")))
 YOUTUBE_UPLOAD = YOUTUBE_DIR / "tools" / "youtube" / "upload_youtube.py"
 YOUTUBE_STORAGE = YOUTUBE_DIR / "storage" / "youtube"
-KURAGE_API = os.environ.get("KURAGE_API", "http://localhost:18200")
+KURAGE_API = os.environ.get("KURAGE_API", "http://localhost:18303")
 AIXSNS_API = os.environ.get("AIXSNS_API", "https://aixec.exbridge.jp/api.php?path=posts")
 DASHBOARD_API = os.environ.get("DASHBOARD_API", "http://localhost:8081/worker/report")
 VWORK_DIR = Path(os.environ.get("VWORK_DIR", str(SCRIPT_DIR.parent / "vwork")))
@@ -223,6 +223,12 @@ def parse_created_article(stdout: str) -> Path | None:
         if m:
             return Path(m.group(1))
     return None
+
+
+def latest_today_article() -> Path | None:
+    today = date.today().strftime("%Y-%m-%d")
+    files = sorted(VWORK_DIR.joinpath("articles").glob(f"{today}-ai-news*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
 
 
 def parse_job_id(stdout: str) -> str:
@@ -444,6 +450,9 @@ def main():
         else:
             skipped_existing += 1
             log("新規記事作成なし")
+            created_article = latest_today_article()
+            if created_article:
+                log(f"既存記事で動画生成を続行: {created_article}")
     else:
         failed += 1
 

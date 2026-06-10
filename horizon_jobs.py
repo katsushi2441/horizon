@@ -86,7 +86,7 @@ def _worker_status(url: str | None = None) -> dict[str, Any]:
 
 def _extract_metric(worker_status: dict[str, Any], key: str) -> int:
     note = str(worker_status.get("note") or "")
-    match = re.search(rf"(?:^|\\s){re.escape(key)}=(\\d+)", note)
+    match = re.search(rf"(?:^|\s){re.escape(key)}=(\d+)", note)
     if not match:
         return 0
     return int(match.group(1))
@@ -130,7 +130,7 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
     wait_timeout = int(kwargs.get("wait_timeout") or os.environ.get("AIXEC_HORIZON_WAIT_TIMEOUT", DEFAULT_WAIT_TIMEOUT))
     env = dict(os.environ)
     env.setdefault("OLLAMA_API_KEY", str(kwargs.get("ollama_api_key") or "ollama"))
-    env.setdefault("KURAGE_API", str(kwargs.get("kurage_api") or os.environ.get("KURAGE_API") or "http://exbridge.ddns.net:18200"))
+    env.setdefault("KURAGE_API", str(kwargs.get("kurage_api") or os.environ.get("KURAGE_API") or "http://localhost:18303"))
     env.setdefault("DASHBOARD_API", str(kwargs.get("dashboard_api") or os.environ.get("DASHBOARD_API") or "http://192.168.0.14:8081/worker/report"))
     env.setdefault("AIXSNS_API", str(kwargs.get("aixsns_api") or os.environ.get("AIXSNS_API") or "https://aixec.exbridge.jp/api.php?path=posts"))
     env.setdefault("VWORK_DIR", str(kwargs.get("vwork_dir") or os.environ.get("VWORK_DIR") or "/home/kojima/work/vwork"))

@@ -14,7 +14,7 @@ import time
 
 import requests
 
-KURAGE_API = "http://exbridge.ddns.net:18200"
+KURAGE_API = "http://localhost:18303"
 PUBLIC_HORIZONV = "https://aiknowledgecms.exbridge.jp/horizonv.php"
 
 
