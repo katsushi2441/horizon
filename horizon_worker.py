@@ -81,7 +81,7 @@ def report_worker(status: str, items: int, note: str = ""):
             "name": "horizon-worker-enqueue",
             "status": status,
             "items": items,
-            "note": note[:200],
+            "note": note[:1000],
         }).encode()
         req = urllib.request.Request(DASHBOARD_API, data=payload,
                                      headers={"Content-Type": "application/json"}, method="POST")
@@ -234,6 +234,15 @@ def latest_today_article() -> Path | None:
 def parse_job_id(stdout: str) -> str:
     m = re.search(r"送信完了:\s*job_id=([0-9A-Za-z_-]+)", stdout)
     return m.group(1) if m else ""
+
+
+def duplicate_skip_count(stdout: str) -> int:
+    if "同日既存記事と重複しないsummary項目が残っていません" not in stdout:
+        return 0
+    match = re.search(r"同日重複除外:\s*(\d+)件", stdout)
+    if match:
+        return int(match.group(1))
+    return 1
 
 
 def wait_video_done(job_id: str, timeout: int = 1800) -> bool:
@@ -403,6 +412,7 @@ def main():
     mail_posts = 0
     skipped_existing = 0
     failed = 0
+    failure_reasons = []
     job_ids = []
     youtube_urls = []
     created_article = None
@@ -416,7 +426,7 @@ def main():
         cwd=HORIZON_DIR,
     )
     if not ok:
-        report_worker("error", 0, "Horizon summary生成失敗")
+        report_worker("error", 0, "reason=summary_generation_failed Horizon summary生成失敗")
         sys.exit(1)
 
     # Step 2: 記事投稿
@@ -440,6 +450,7 @@ def main():
                 mail_posts += 1
             else:
                 failed += 1
+                failure_reasons.append("mail_crosspost_failed")
             if article_title:
                 article_post_id = post_to_sns(
                     f"📰 {article_title}\n\n"
@@ -454,7 +465,14 @@ def main():
             if created_article:
                 log(f"既存記事で動画生成を続行: {created_article}")
     else:
-        failed += 1
+        duplicate_count = duplicate_skip_count(run_step.last_stdout)
+        if duplicate_count:
+            skipped_existing += duplicate_count
+            failure_reasons.append("duplicate_all_summary_items")
+            log(f"記事投稿は重複のみのため新規作成なし: skipped_existing={duplicate_count}")
+        else:
+            failed += 1
+            failure_reasons.append("article_post_failed")
 
     # Step 3: 動画生成
     report_worker("running", videos_created, "動画生成中")
@@ -472,10 +490,12 @@ def main():
                 timeout=120,
             )
             if not ok:
+                failure_reasons.append(f"video_enqueue_failed_attempt_{attempt}")
                 continue
             job_id = parse_job_id(run_step.last_stdout) or get_video_job_id_for_article(source_article_url)
             if not job_id:
                 log("新規動画job_idなし")
+                failure_reasons.append(f"video_job_id_missing_attempt_{attempt}")
                 continue
             job_ids.append(job_id)
             log(f"動画job_id: {job_id} 完了待ち...")
@@ -483,6 +503,7 @@ def main():
                 video_done = True
                 break
             log(f"動画生成失敗のため再試行します: job_id={job_id}")
+            failure_reasons.append(f"video_generation_failed_job_{job_id}")
     else:
         log("新規記事がないため動画生成をスキップ")
 
@@ -518,6 +539,8 @@ def main():
             )
     elif created_article:
         failed += 1
+        if not failure_reasons:
+            failure_reasons.append("video_generation_not_completed")
 
     note = (
         f"articles_created={articles_created} videos_created={videos_created} "
@@ -525,6 +548,8 @@ def main():
         f"youtube_auto_upload={'enabled' if HORIZON_AUTO_YOUTUBE_UPLOAD else 'disabled'} "
         f"skipped_existing={skipped_existing} failed={failed}"
     )
+    if failure_reasons:
+        note += f" reason={','.join(dict.fromkeys(failure_reasons))}"
     if job_ids:
         note += f" job_ids={','.join(job_ids)}"
     if youtube_urls:
