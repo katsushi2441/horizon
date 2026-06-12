@@ -132,7 +132,7 @@ def worker_auto_cycle_job(dry_run: bool = False, **kwargs: Any) -> dict[str, Any
     env.setdefault("OLLAMA_API_KEY", str(kwargs.get("ollama_api_key") or "ollama"))
     env.setdefault("KURAGE_API", str(kwargs.get("kurage_api") or os.environ.get("KURAGE_API") or "http://localhost:18303"))
     env.setdefault("DASHBOARD_API", str(kwargs.get("dashboard_api") or os.environ.get("DASHBOARD_API") or "http://192.168.0.14:8081/worker/report"))
-    env.setdefault("AIXSNS_API", str(kwargs.get("aixsns_api") or os.environ.get("AIXSNS_API") or "https://aixec.exbridge.jp/api.php?path=posts"))
+    env.setdefault("AIXSNS_API", str(kwargs.get("aixsns_api") or os.environ.get("AIXSNS_API") or "http://127.0.0.1:8081/posts"))
     env.setdefault("VWORK_DIR", str(kwargs.get("vwork_dir") or os.environ.get("VWORK_DIR") or "/home/kojima/work/vwork"))
     env.setdefault("KURAGE_JOBS_DIR", str(kwargs.get("kurage_jobs_dir") or os.environ.get("KURAGE_JOBS_DIR") or "/home/kojima/work/kurage/storage/jobs"))
     if kwargs.get("youtube_dir"):
