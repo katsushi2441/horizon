@@ -15,7 +15,7 @@ import time
 import requests
 
 KURAGE_API = "http://localhost:18303"
-PUBLIC_HORIZONV = "https://aiknowledgecms.exbridge.jp/horizonv.php"
+PUBLIC_KURAGEV = "https://kurage.exbridge.jp/kuragev.php"
 
 
 def log(msg: str) -> None:
@@ -63,11 +63,11 @@ def main() -> None:
 
     job_id = submit(url)
     log(f"送信完了: job_id={job_id}")
-    log(f"動画ページ: {PUBLIC_HORIZONV}?id={job_id}")
+    log(f"動画ページ: {PUBLIC_KURAGEV}?id={job_id}")
 
     if args.wait:
         data = wait_done(job_id)
-        log(f"動画生成完了: {PUBLIC_HORIZONV}?id={job_id}")
+        log(f"動画生成完了: {PUBLIC_KURAGEV}?id={job_id}")
         print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
