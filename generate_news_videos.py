@@ -24,6 +24,8 @@ HORIZON_DIR = Path(os.environ.get("HORIZON_DIR") or (Path(__file__).parent / "Ho
 SUMMARIES_DIR = HORIZON_DIR / "data" / "summaries"
 KURAGE_JOBS_DIR = Path(os.environ.get("KURAGE_JOBS_DIR", "/home/kojima/work/kurage/storage/jobs"))
 KURAGE_API = os.environ.get("KURAGE_API", "http://localhost:18303")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://192.168.0.14:11434")
+OLLAMA_MODEL = os.environ.get("HORIZON_TITLE_MODEL", "gemma4:12b-it-qat")
 VWORK_ARTICLES_URL = os.environ.get("VWORK_ARTICLES_URL", "https://katsushi2441.github.io/vwork/articles/")
 VWORK_ARTICLES_DIR = Path(os.environ.get("VWORK_ARTICLES_DIR") or Path(os.environ.get("VWORK_DIR", "/home/kojima/work/vwork")) / "articles")
 
@@ -219,6 +221,49 @@ def wait_done(job_id: str, timeout: int = 900) -> dict:
     raise TimeoutError(f"タイムアウト: {job_id}")
 
 
+def build_video_title(top_items: list[dict], summary_date: str) -> str:
+    """検索クエリに寄せた日本語タイトルをLLMで生成する。
+
+    SEO方針(2026-07-11): 1本=1固有名詞、固有名詞を先頭、検索者の疑問に直答。
+    従来の「英語記事タイトル先頭15字×3本を『・』連結して60字で切断」は
+    切れ端の英語になり検索に全く立たなかった(GSC実測)ため廃止。
+    """
+    top = top_items[0]
+    others = "\n".join(f"- {i['title']}" for i in top_items[1:3])
+    prompt = f"""あなたは日本語ニュース動画のタイトル編集者です。以下のメイン記事から、Google/YouTube検索に強い日本語タイトルを1本だけ作ってください。
+
+メイン記事: {top['title']}
+要約: {(top.get('body') or '')[:400]}
+(同じ動画で軽く触れる他の話題: {others})
+
+ルール:
+- メイン記事の中心となる固有名詞(製品名・企業名・モデル名など)をタイトルの先頭に置く
+- その固有名詞を検索した人の疑問に答える形にする(「〜とは」「〜の理由」「〜への反応」など)
+- 全体で25〜42文字の自然な日本語。英単語は固有名詞のみ可
+- 日付・絵文字・複数話題の羅列(「・」区切り)は入れない
+
+タイトルだけを1行で出力:"""
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json={
+            "model": OLLAMA_MODEL, "prompt": prompt, "stream": False,
+            "think": False,  # gemma4は思考型: 無効化しないと空応答になる
+            "options": {"temperature": 0.4, "num_predict": 128},
+        }, timeout=180)
+        resp.raise_for_status()
+        raw = (resp.json().get("response") or "").strip()
+        title = raw.splitlines()[0].strip().strip('"').strip("「」『』")
+        has_ja = any(
+            0x3040 <= ord(c) <= 0x30FF or 0x4E00 <= ord(c) <= 0x9FFF for c in title
+        )
+        if 12 <= len(title) <= 48 and has_ja and "・" not in title:
+            return title
+        log(f"LLMタイトルが検証NG(フォールバックへ): {title!r}")
+    except Exception as exc:
+        log(f"LLMタイトル生成失敗(フォールバックへ): {exc}")
+    # フォールバック: メイン記事タイトルを切断せず1本だけ使う(羅列よりまし)
+    return f"{top['title'][:38]} — AIニュース {summary_date}"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Horizon ニュース → Kurage 動画生成（複数記事→1本）")
     parser.add_argument("--max", type=int, default=5, help="まとめる記事数（デフォルト5）")
@@ -250,8 +295,7 @@ def main():
     # Horizonの日次動画は「個別ニュース」ではなく日次記事の動画として管理する。
     # Kurage側は先頭news_itemのurlを動画の識別URLに使うため、ここで日次記事URLを入れる。
     top_items[0]["url"] = article_url
-    title = f"AIニュース {summary_date} — " + "・".join(i["title"][:15] for i in top_items[:3])
-    title = title[:60]
+    title = build_video_title(top_items, summary_date)
 
     log(f"動画タイトル: {title}")
     for i, item in enumerate(top_items, 1):
