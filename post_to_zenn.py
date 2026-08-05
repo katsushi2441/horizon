@@ -399,6 +399,9 @@ def to_zenn_markdown(summary_text: str, post_date: str) -> tuple[str, str]:
     body = translate_to_japanese(summary_text, post_date)
     article_title = extract_h1_title(body, post_date, summary_text)
     log(f"記事タイトル: {article_title}")
+    # 本文の「# タイトル」は落とす。公開側のレイアウトが frontmatter の title から
+    # h1 を出すため、残すとページ内にh1が2つできる（2026-08-05に210記事で発生）。
+    body = re.sub(r"^# .+\n+", "", body, count=1, flags=re.M)
 
     frontmatter = f"""---
 title: "{article_title}"
