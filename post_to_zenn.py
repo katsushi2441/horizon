@@ -89,6 +89,7 @@ def translate_to_japanese(summary_text: str, post_date: str) -> str:
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
+        "think": False,  # gemma4/qwen3 は思考型。無いと response が空になる
         "options": {"temperature": 0.5, "num_predict": 3000},
     }).encode()
 
